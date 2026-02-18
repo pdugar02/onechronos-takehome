@@ -17,37 +17,6 @@ DEFAULT_CONFIG = {
     "discrepancy": {"price_tolerance": 0.01},
 }
 
-
-def load_config(path: str = "config.yaml") -> dict:
-    config = {
-        "validation": {"drop_duplicates": bool(DEFAULT_CONFIG["validation"]["drop_duplicates"])},
-        "discrepancy": {"price_tolerance": float(DEFAULT_CONFIG["discrepancy"]["price_tolerance"])},
-    }
-
-    if not os.path.exists(path):
-        return config
-
-    try:
-        import yaml
-    except ImportError as e:
-        raise ImportError("PyYAML is required to load config.yaml. Install requirements.txt.") from e
-
-    with open(path, "r") as f:
-        raw = yaml.safe_load(f) or {}
-    if not isinstance(raw, dict):
-        raise ValueError("config.yaml must contain a YAML mapping (dictionary) at the root.")
-
-    validation = raw.get("validation", {})
-    if isinstance(validation, dict) and "drop_duplicates" in validation:
-        config["validation"]["drop_duplicates"] = bool(validation["drop_duplicates"])
-
-    discrepancy = raw.get("discrepancy", {})
-    if isinstance(discrepancy, dict) and "price_tolerance" in discrepancy:
-        config["discrepancy"]["price_tolerance"] = float(discrepancy["price_tolerance"])
-
-    return config
-
-
 def configure_logging(*, level: str = "INFO") -> logging.Logger:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
@@ -80,10 +49,6 @@ def load_data(*, drop_duplicates: bool):
         symbols = symbols.drop_duplicates()
 
     return trades, counterparty_fills, symbols
-
-
-def get_active_symbols(symbols: pd.DataFrame) -> list[str]:
-    return symbols.loc[symbols["is_active"], "symbol"].tolist()
 
 def normalize_timestamps(series):
     """
@@ -160,25 +125,22 @@ def phase1_filter_and_collect_exceptions(
         # Drop rows with invalid symbols
         invalid_symbols_filter = ~table["symbol"].isin(active_symbols)
         invalid_symbols = table.loc[invalid_symbols_filter]
-        if len(invalid_symbols) > 0:
-            add_exceptions(exceptions, invalid_symbols, ExceptionType.INVALID_SYMBOL, table_name)
-            stats.add_exception_count(ExceptionType.INVALID_SYMBOL, len(invalid_symbols))
+        add_exceptions(exceptions, invalid_symbols, ExceptionType.INVALID_SYMBOL, table_name)
+        stats.add_exception_count(ExceptionType.INVALID_SYMBOL, len(invalid_symbols))
         table = table.loc[~invalid_symbols_filter]
 
         # Drop rows with missing price values
         missing_prices_filter = table["price"].isna()
         missing_prices = table.loc[missing_prices_filter]
-        if len(missing_prices) > 0:
-            add_exceptions(exceptions, missing_prices, ExceptionType.MISSING_FIELD, table_name, "price")
-            stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_prices))
+        add_exceptions(exceptions, missing_prices, ExceptionType.MISSING_FIELD, table_name, "price")
+        stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_prices))
         table = table.loc[~missing_prices_filter]
         
         # Drop rows with missing quantity values
         missing_quantities_filter = table["quantity"].isna()
         missing_quantities = table.loc[missing_quantities_filter]
-        if len(missing_quantities) > 0:
-            add_exceptions(exceptions, missing_quantities, ExceptionType.MISSING_FIELD, table_name, "quantity")
-            stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_quantities))
+        add_exceptions(exceptions, missing_quantities, ExceptionType.MISSING_FIELD, table_name, "quantity")
+        stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_quantities))
         table = table.loc[~missing_quantities_filter]
 
         # Drop rows with invalid timestamp values
@@ -186,9 +148,8 @@ def phase1_filter_and_collect_exceptions(
         table["timestamp"] = normalize_timestamps(table["timestamp"])
         invalid_timestamps_filter = table["timestamp"].isna()
         invalid_timestamps = table.loc[invalid_timestamps_filter]
-        if len(invalid_timestamps) > 0:
-            add_exceptions(exceptions, invalid_timestamps, ExceptionType.INVALID_TIMESTAMP, table_name)
-            stats.add_exception_count(ExceptionType.INVALID_TIMESTAMP, len(invalid_timestamps))
+        add_exceptions(exceptions, invalid_timestamps, ExceptionType.INVALID_TIMESTAMP, table_name)
+        stats.add_exception_count(ExceptionType.INVALID_TIMESTAMP, len(invalid_timestamps))
         table = table.loc[~invalid_timestamps_filter]
 
         # Round all prices to 2 decimals
@@ -274,7 +235,10 @@ def export_results(*, cleaned_trades: list[dict], exceptions: list[dict]) -> Non
 
 
 def main() -> None:
-    config = load_config()
+    config = {
+        "validation": {"drop_duplicates": bool(DEFAULT_CONFIG["validation"]["drop_duplicates"])},
+        "discrepancy": {"price_tolerance": float(DEFAULT_CONFIG["discrepancy"]["price_tolerance"])},
+    }
     logger = configure_logging()
     stats = Stats()
 
@@ -289,7 +253,7 @@ def main() -> None:
     }
     logger.info("loaded records=%s", stats.records_read)
 
-    active_symbols = get_active_symbols(symbols)
+    active_symbols = symbols[symbols["is_active"], "symbol"].tolist()
     exceptions: list[dict] = []
 
     trades, counterparty_fills = phase1_filter_and_collect_exceptions(
