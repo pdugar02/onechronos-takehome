@@ -10,5 +10,5 @@ EXCEPTION_TEMPLATES = {
     ExceptionType.CANCELLED_TRADE: "Trade {trade_id} is cancelled.",
     ExceptionType.INVALID_TIMESTAMP: "Trade {trade_id} has invalid or missing timestamp.",
     ExceptionType.INVALID_SYMBOL: "Symbol '{symbol}' is not in reference.",
-    ExceptionType.MISSING_FIELD: "Row {row_id}: missing required field '{field}'.",
+    ExceptionType.MISSING_FIELD: "This trade is missing required field '{field}'.",
 }
