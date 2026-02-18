@@ -1,0 +1,24 @@
+Plan:
+- Create data classes for exception types, and attach explanation templates to them
+- Create json object representations of a record for the records in exceptions; this needs its own function
+- Clean data
+    Phase 1:
+    - Put all cancelled trades in exceptions
+    - Put all trades with INVALID_SYM in exceptions
+    - Timestamps
+        - Put all trades with no timestamp in exceptions
+        - Then, format all timestamps the same (ISO 8601 string)
+    - Finally, check if they don't have a price/quantity and put in exceptions
+    - Round all prices to two decimal points
+    
+    Phase 2:
+    - 
+
+
+
+
+
+Stack:
+- Pandas for everything pretty much
+- pandasql for detecting and flagging discrepancies
+- pandas.to_json() for exporting the final files
