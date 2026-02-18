@@ -12,13 +12,9 @@ Plan:
     - Round all prices to two decimal points
     
     Phase 2:
-    - Compare trades between trades.csv and counterparty_fills.csv to see which records match (none of them do)
+    - Compare trades between trades.csv and counterparty_fills.csv to see which records match (none of them do with this data)
     - set counterparty_confirmed and discrepancy_flag values for each
-
-
-
 
 Stack:
 - Pandas for everything pretty much
 - pandasql for detecting and flagging discrepancies
-- pandas.to_json() for exporting the final files
