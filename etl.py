@@ -3,16 +3,82 @@ import numpy as np
 import pandasql as ps
 import json
 import os
+import logging
+from dataclasses import dataclass, field
 from exception_types import ExceptionType, EXCEPTION_TEMPLATES
 
 DATA_DIR = "data"
 OUTPUT_DIR = "output"
 
+DEFAULT_CONFIG = {
+    "validation": {
+        "drop_duplicates": True
+    },
+    "discrepancy": {"price_tolerance": 0.01},
+}
 
-def load_data():
-    trades = pd.read_csv(os.path.join(DATA_DIR, "trades.csv")).drop_duplicates()
-    counterparty_fills = pd.read_csv(os.path.join(DATA_DIR, "counterparty_fills.csv")).drop_duplicates()
-    symbols = pd.read_csv(os.path.join(DATA_DIR, "symbols_reference.csv")).drop_duplicates()
+
+def load_config(path: str = "config.yaml") -> dict:
+    config = {
+        "validation": {"drop_duplicates": bool(DEFAULT_CONFIG["validation"]["drop_duplicates"])},
+        "discrepancy": {"price_tolerance": float(DEFAULT_CONFIG["discrepancy"]["price_tolerance"])},
+    }
+
+    if not os.path.exists(path):
+        return config
+
+    try:
+        import yaml
+    except ImportError as e:
+        raise ImportError("PyYAML is required to load config.yaml. Install requirements.txt.") from e
+
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("config.yaml must contain a YAML mapping (dictionary) at the root.")
+
+    validation = raw.get("validation", {})
+    if isinstance(validation, dict) and "drop_duplicates" in validation:
+        config["validation"]["drop_duplicates"] = bool(validation["drop_duplicates"])
+
+    discrepancy = raw.get("discrepancy", {})
+    if isinstance(discrepancy, dict) and "price_tolerance" in discrepancy:
+        config["discrepancy"]["price_tolerance"] = float(discrepancy["price_tolerance"])
+
+    return config
+
+
+def configure_logging(*, level: str = "INFO") -> logging.Logger:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    return logging.getLogger("etl")
+
+
+@dataclass
+class Stats:
+    records_read: dict[str, int] = field(default_factory=dict)
+    records_after_phase1: dict[str, int] = field(default_factory=dict)
+    exceptions_by_type: dict[str, int] = field(default_factory=dict)
+    cleaned_trades_count: int = 0
+    counterparty_confirmed_count: int = 0
+    discrepancy_count: int = 0
+
+    def add_exception_count(self, exception: ExceptionType, n: int) -> None:
+        self.exceptions_by_type[exception.value] = self.exceptions_by_type.get(exception.value, 0) + n
+
+
+def load_data(*, drop_duplicates: bool):
+    trades = pd.read_csv(os.path.join(DATA_DIR, "trades.csv"))
+    counterparty_fills = pd.read_csv(os.path.join(DATA_DIR, "counterparty_fills.csv"))
+    symbols = pd.read_csv(os.path.join(DATA_DIR, "symbols_reference.csv"))
+
+    if drop_duplicates:
+        trades = trades.drop_duplicates()
+        counterparty_fills = counterparty_fills.drop_duplicates()
+        symbols = symbols.drop_duplicates()
+
     return trades, counterparty_fills, symbols
 
 
@@ -75,35 +141,44 @@ def phase1_filter_and_collect_exceptions(
     counterparty_fills: pd.DataFrame,
     active_symbols: list[str],
     exceptions: list[dict],
+    logger: logging.Logger,
+    stats: Stats,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     # Drop all cancelled trades (trades table only)
     cancelled_filter = trades["trade_status"] == "CANCELLED"
     cancelled = trades.loc[cancelled_filter]
-    add_exceptions(exceptions, cancelled, ExceptionType.CANCELLED_TRADE, "trades.csv")
+    if len(cancelled) > 0:
+        add_exceptions(exceptions, cancelled, ExceptionType.CANCELLED_TRADE, "trades.csv")
+        stats.add_exception_count(ExceptionType.CANCELLED_TRADE, len(cancelled))
     trades = trades.loc[~cancelled_filter]
 
     tables: dict[str, pd.DataFrame] = {"trades.csv": trades, "counterparty_fills.csv": counterparty_fills}
 
     for table_name, table in tables.items():
-        print(table_name + " start length: " + str(len(table)))
-        print()
+        logger.info("%s start_records=%s", table_name, len(table))
 
         # Drop rows with invalid symbols
         invalid_symbols_filter = ~table["symbol"].isin(active_symbols)
         invalid_symbols = table.loc[invalid_symbols_filter]
-        add_exceptions(exceptions, invalid_symbols, ExceptionType.INVALID_SYMBOL, table_name)
+        if len(invalid_symbols) > 0:
+            add_exceptions(exceptions, invalid_symbols, ExceptionType.INVALID_SYMBOL, table_name)
+            stats.add_exception_count(ExceptionType.INVALID_SYMBOL, len(invalid_symbols))
         table = table.loc[~invalid_symbols_filter]
 
         # Drop rows with missing price values
         missing_prices_filter = table["price"].isna()
         missing_prices = table.loc[missing_prices_filter]
-        add_exceptions(exceptions, missing_prices, ExceptionType.MISSING_FIELD, table_name, "price")
+        if len(missing_prices) > 0:
+            add_exceptions(exceptions, missing_prices, ExceptionType.MISSING_FIELD, table_name, "price")
+            stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_prices))
         table = table.loc[~missing_prices_filter]
         
         # Drop rows with missing quantity values
         missing_quantities_filter = table["quantity"].isna()
         missing_quantities = table.loc[missing_quantities_filter]
-        add_exceptions(exceptions, missing_quantities, ExceptionType.MISSING_FIELD, table_name, "quantity")
+        if len(missing_quantities) > 0:
+            add_exceptions(exceptions, missing_quantities, ExceptionType.MISSING_FIELD, table_name, "quantity")
+            stats.add_exception_count(ExceptionType.MISSING_FIELD, len(missing_quantities))
         table = table.loc[~missing_quantities_filter]
 
         # Drop rows with invalid timestamp values
@@ -111,19 +186,27 @@ def phase1_filter_and_collect_exceptions(
         table["timestamp"] = normalize_timestamps(table["timestamp"])
         invalid_timestamps_filter = table["timestamp"].isna()
         invalid_timestamps = table.loc[invalid_timestamps_filter]
-        add_exceptions(exceptions, invalid_timestamps, ExceptionType.INVALID_TIMESTAMP, table_name)
+        if len(invalid_timestamps) > 0:
+            add_exceptions(exceptions, invalid_timestamps, ExceptionType.INVALID_TIMESTAMP, table_name)
+            stats.add_exception_count(ExceptionType.INVALID_TIMESTAMP, len(invalid_timestamps))
         table = table.loc[~invalid_timestamps_filter]
 
         # Round all prices to 2 decimals
         table["price"] = table["price"].round(2)
 
         tables[table_name] = table
-        print(table_name + " end length: " + str(len(table)))
-        print()
+        logger.info("%s end_records=%s", table_name, len(table))
 
     return tables["trades.csv"], tables["counterparty_fills.csv"]
 
-def phase2_build_cleaned_trades(*, trades: pd.DataFrame, counterparty_fills: pd.DataFrame) -> list[dict]:
+def phase2_build_cleaned_trades(
+    *,
+    trades: pd.DataFrame,
+    counterparty_fills: pd.DataFrame,
+    price_tolerance: float,
+    logger: logging.Logger,
+    stats: Stats,
+) -> list[dict]:
     counterparty_query = """
     SELECT trades.trade_id, trades.timestamp, trades.symbol,
            trades.quantity as trades_quantity, trades.price as trades_price,
@@ -135,7 +218,7 @@ def phase2_build_cleaned_trades(*, trades: pd.DataFrame, counterparty_fills: pd.
     confirmed_df = ps.sqldf(counterparty_query)
 
     no_discrepancy_mask = (
-        (confirmed_df["trades_price"] - confirmed_df["cp_price"]).abs() <= 0.01
+        (confirmed_df["trades_price"] - confirmed_df["cp_price"]).abs() <= price_tolerance
     ) & (confirmed_df["trades_quantity"] == confirmed_df["cp_quantity"])
 
     confirmed_trade_ids = set(confirmed_df["trade_id"].tolist())
@@ -164,6 +247,16 @@ def phase2_build_cleaned_trades(*, trades: pd.DataFrame, counterparty_fills: pd.
         }
         cleaned_trades.append(trade_record)
 
+    stats.cleaned_trades_count = len(cleaned_trades)
+    stats.counterparty_confirmed_count = sum(1 for r in cleaned_trades if r["counterparty_confirmed"])
+    stats.discrepancy_count = sum(1 for r in cleaned_trades if r["discrepancy_flag"])
+    logger.info(
+        "phase2 cleaned_trades=%s counterparty_confirmed=%s discrepancies=%s",
+        stats.cleaned_trades_count,
+        stats.counterparty_confirmed_count,
+        stats.discrepancy_count,
+    )
+
     return cleaned_trades
 
 
@@ -181,7 +274,21 @@ def export_results(*, cleaned_trades: list[dict], exceptions: list[dict]) -> Non
 
 
 def main() -> None:
-    trades, counterparty_fills, symbols = load_data()
+    config = load_config()
+    logger = configure_logging()
+    stats = Stats()
+
+    drop_duplicates = bool(config["validation"].get("drop_duplicates", True))
+    price_tolerance = float(config["discrepancy"].get("price_tolerance", 0.01))
+
+    trades, counterparty_fills, symbols = load_data(drop_duplicates=drop_duplicates)
+    stats.records_read = {
+        "trades.csv": len(trades),
+        "counterparty_fills.csv": len(counterparty_fills),
+        "symbols_reference.csv": len(symbols),
+    }
+    logger.info("loaded records=%s", stats.records_read)
+
     active_symbols = get_active_symbols(symbols)
     exceptions: list[dict] = []
 
@@ -190,9 +297,23 @@ def main() -> None:
         counterparty_fills=counterparty_fills,
         active_symbols=active_symbols,
         exceptions=exceptions,
+        logger=logger,
+        stats=stats,
     )
 
-    cleaned_trades = phase2_build_cleaned_trades(trades=trades, counterparty_fills=counterparty_fills)
+    stats.records_after_phase1 = {
+        "trades.csv": len(trades),
+        "counterparty_fills.csv": len(counterparty_fills),
+    }
+    logger.info("phase1 remaining_records=%s exceptions_by_type=%s", stats.records_after_phase1, stats.exceptions_by_type)
+
+    cleaned_trades = phase2_build_cleaned_trades(
+        trades=trades,
+        counterparty_fills=counterparty_fills,
+        price_tolerance=price_tolerance,
+        logger=logger,
+        stats=stats,
+    )
     export_results(cleaned_trades=cleaned_trades, exceptions=exceptions)
 
 

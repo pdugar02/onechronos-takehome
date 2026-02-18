@@ -1,6 +1,6 @@
 Plan:
 - Create data classes for exception types, and attach explanation templates to them
-- Create json object representations of a record for the records in exceptions; this needs its own function
+- Drop Duplicates
 - Clean data
     Phase 1: (for both trades.csv and counterparty_fills.csv)
     - Put all cancelled trades in exceptions
@@ -13,8 +13,9 @@ Plan:
     
     Phase 2:
     - Compare trades between trades.csv and counterparty_fills.csv to see which records match (none of them do with this data)
-    - set counterparty_confirmed and discrepancy_flag values for each
+    - set counterparty_confirmed and discrepancy_flag values for each trade
 
-Stack:
+Libraries needed:
 - Pandas for everything pretty much
 - pandasql for detecting and flagging discrepancies
+- use json library for dumping into output files
